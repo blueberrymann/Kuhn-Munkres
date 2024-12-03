@@ -149,52 +149,34 @@ class Munkres:
 
         return utility
 
-
-
-
-
     def compute(self, cost_matrix: Matrix) -> Sequence[Tuple[int, int]]:
+        """计算最优匹配方案
+
+        输入cost_matrix为成本矩阵,返回最优匹配的(行,列)索引对列表
+        支持方形和矩形矩阵,不规则矩阵不支持
+        非方形矩阵会用0填充成方阵
         """
-        Compute the indexes for the lowest-cost pairings between rows and
-        columns in the database. Returns a list of `(row, column)` tuples
-        that can be used to traverse the matrix.
+        # 填充成方阵并初始化
+        self.C = self.pad_matrix(cost_matrix)  # 填充矩阵
+        self.n = len(self.C)  # 方阵大小
+        self.original_length = len(cost_matrix)  # 原矩阵行数
+        self.original_width = len(cost_matrix[0])  # 原矩阵列数
+        self.row_covered = [False for i in range(self.n)]  # 行覆盖标记
+        self.col_covered = [False for i in range(self.n)]  # 列覆盖标记
+        self.Z0_r = 0  # 当前零元素行号
+        self.Z0_c = 0  # 当前零元素列号
+        self.path = self.__make_matrix(self.n * 2, 0)  # 记录交错路径
+        self.marked = self.__make_matrix(self.n, 0)  # 标记矩阵(0:无标记 1:星号 2:撇号)
 
-        **WARNING**: This code handles square and rectangular matrices. It
-        does *not* handle irregular matrices.
-
-        **Parameters**
-
-        - `cost_matrix` (list of lists of numbers): The cost matrix. If this
-          cost matrix is not square, it will be padded with zeros, via a call
-          to `pad_matrix()`. (This method does *not* modify the caller's
-          matrix. It operates on a copy of the matrix.)
-
-
-        **Returns**
-
-        A list of `(row, column)` tuples that describe the lowest cost path
-        through the matrix
-        """
-        self.C = self.pad_matrix(cost_matrix)
-        self.n = len(self.C)
-        self.original_length = len(cost_matrix)
-        self.original_width = len(cost_matrix[0])
-        self.row_covered = [False for i in range(self.n)]
-        self.col_covered = [False for i in range(self.n)]
-        self.Z0_r = 0
-        self.Z0_c = 0
-        self.path = self.__make_matrix(self.n * 2, 0)
-        self.marked = self.__make_matrix(self.n, 0)
-
+        # 执行匈牙利算法的6个步骤
         done = False
         step = 1
-
-        steps = { 1 : self.__step1,
-                  2 : self.__step2,
-                  3 : self.__step3,
-                  4 : self.__step4,
-                  5 : self.__step5,
-                  6 : self.__step6 }
+        steps = {1: self.__step1,  # 行归约
+                 2: self.__step2,  # 找零元素并标星
+                 3: self.__step3,  # 覆盖带星列
+                 4: self.__step4,  # 找未覆盖零并标记
+                 5: self.__step5,  # 构造交错路径
+                 6: self.__step6}  # 调整矩阵
 
         while not done:
             try:
@@ -203,21 +185,29 @@ class Munkres:
             except KeyError:
                 done = True
 
-        # Look for the starred columns
+        # 提取最优匹配结果
         results = []
         for i in range(self.original_length):
             for j in range(self.original_width):
-                if self.marked[i][j] == 1:
+                if self.marked[i][j] == 1:  # 带星元素即为匹配
                     results += [(i, j)]
 
         return results
 
     def __copy_matrix(self, matrix: Matrix) -> Matrix:
-        """Return an exact copy of the supplied matrix"""
+        """
+        深拷贝矩阵
+        深拷贝(deep copy)是指创建一个新的矩阵,不仅复制矩阵本身,还复制其中的所有嵌套数据。
+        与之相对的是浅拷贝(shallow copy),只复制最外层结构。
+        例如对于矩阵 [[1,2], [3,4]]:
+        浅拷贝: 新矩阵引用原始内部列表
+        深拷贝: 创建完全独立的新矩阵
+        深拷贝确保修改新矩阵不会影响原矩阵。
+        """
         return copy.deepcopy(matrix)
 
     def __make_matrix(self, n: int, val: AnyNum) -> Matrix:
-        """Create an *n*x*n* matrix, populating it with the specific value."""
+        """创建n*n大小的矩阵,填充指定初值val"""
         matrix = []
         for i in range(n):
             matrix += [[val for j in range(n)]]
@@ -225,161 +215,190 @@ class Munkres:
 
     def __step1(self) -> int:
         """
-        For each row of the matrix, find the smallest element and
-        subtract it from every element in its row. Go to Step 2.
+        第一步:行归约 - 从每行中减去该行的最小值,使每行都有零元素
+
+        DISALLOWED表示不可达的权重值，例如：有的工人拒绝前往地点进行服务、某工人不具备完成特定任务的技能
+
         """
-        C = self.C
-        n = self.n
+        C = self.C  # 获取成本矩阵的引用
+        n = self.n  # 获取矩阵大小
+
+        # 对每一行进行处理
         for i in range(n):
+            # 获取该行中所有非禁止值
             vals = [x for x in self.C[i] if x is not DISALLOWED]
+
+            # 如果该行全是禁止值,则无法求解
             if len(vals) == 0:
-                # All values in this row are DISALLOWED. This matrix is
-                # unsolvable.
-                raise UnsolvableMatrix(
-                    "Row {0} is entirely DISALLOWED.".format(i)
-                )
+                raise UnsolvableMatrix("第{0}行全部禁止".format(i))
+
+            # 找出该行最小值
             minval = min(vals)
-            # Find the minimum value for this row and subtract that minimum
-            # from every element in the row.
+
+            # 该行每个非禁止元素都减去最小值
+            # 这样确保每行至少有一个0,为后续找最优匹配做准备
             for j in range(n):
                 if self.C[i][j] is not DISALLOWED:
                     self.C[i][j] -= minval
-        return 2
+
+        return 2  # 进入第2步
 
     def __step2(self) -> int:
         """
-        Find a zero (Z) in the resulting matrix. If there is no starred
-        zero in its row or column, star Z. Repeat for each element in the
-        matrix. Go to Step 3.
+        第二步:找零元素并标星
+        遍历矩阵,对于未被覆盖的0元素,如果其所在行列都没有星号,则标记星号
         """
         n = self.n
+
+        # 遍历矩阵找零元素
         for i in range(n):
             for j in range(n):
+                # 找到未覆盖的零元素,且其行列都未标记星号
                 if (self.C[i][j] == 0) and \
                         (not self.col_covered[j]) and \
                         (not self.row_covered[i]):
-                    self.marked[i][j] = 1
-                    self.col_covered[j] = True
-                    self.row_covered[i] = True
-                    break
+                    self.marked[i][j] = 1  # 标记星号
+                    self.col_covered[j] = True  # 覆盖此列
+                    self.row_covered[i] = True  # 覆盖此行
+                    break  # 找到一个就处理下一行
 
-        self.__clear_covers()
-        return 3
+        self.__clear_covers()  # 清除所有覆盖标记
+        return 3  # 进入第3步
 
     def __step3(self) -> int:
         """
-        Cover each column containing a starred zero. If K columns are
-        covered, the starred zeros describe a complete set of unique
-        assignments. In this case, Go to DONE, otherwise, Go to Step 4.
+        第三步:覆盖星号列并判断是否完成
+        覆盖所有包含星号的列,如果覆盖的列数等于矩阵维度,说明找到完整匹配
         """
         n = self.n
-        count = 0
+        count = 0  # 记录覆盖的列数
+
+        # 遍历矩阵
         for i in range(n):
             for j in range(n):
+                # 找到未覆盖列中的星号元素
                 if self.marked[i][j] == 1 and not self.col_covered[j]:
-                    self.col_covered[j] = True
-                    count += 1
+                    self.col_covered[j] = True  # 覆盖该列
+                    count += 1  # 覆盖列数+1
 
-        if count >= n:
-            step = 7 # done
-        else:
+        # 判断是否完成匹配
+        if count >= n:  # 覆盖列数等于矩阵维度,匹配完成
+            step = 7
+        else:  # 未完成匹配,继续第4步
             step = 4
 
         return step
 
     def __step4(self) -> int:
-        """
-        Find a noncovered zero and prime it. If there is no starred zero
-        in the row containing this primed zero, Go to Step 5. Otherwise,
-        cover this row and uncover the column containing the starred
-        zero. Continue in this manner until there are no uncovered zeros
-        left. Save the smallest uncovered value and Go to Step 6.
-        """
+        """第四步:找未覆盖的零并标记撇号
+        找到未覆盖的零,标记撇号
+        如果该行没有星号 -> 进入第5步
+        否则:覆盖此行,取消覆盖星号所在列,继续找零
+        如果没有未覆盖的零 -> 进入第6步"""
+
         step = 0
         done = False
-        row = 0
-        col = 0
+        row = col = 0
         star_col = -1
+
         while not done:
+            # 找未覆盖的零
             (row, col) = self.__find_a_zero(row, col)
-            if row < 0:
+
+            if row < 0:  # 没找到未覆盖的零
                 done = True
-                step = 6
-            else:
-                self.marked[row][col] = 2
-                star_col = self.__find_star_in_row(row)
-                if star_col >= 0:
+                step = 6  # 进入第6步
+            else:  # 找到未覆盖的零
+                self.marked[row][col] = 2  # 标记撇号
+                star_col = self.__find_star_in_row(row)  # 在此行找星号
+
+                if star_col >= 0:  # 找到星号
                     col = star_col
-                    self.row_covered[row] = True
-                    self.col_covered[col] = False
-                else:
+                    self.row_covered[row] = True  # 覆盖此行
+                    self.col_covered[col] = False  # 取消覆盖星号列
+                else:  # 没找到星号
                     done = True
-                    self.Z0_r = row
-                    self.Z0_c = col
-                    step = 5
+                    self.Z0_r = row  # 记录当前零元素位置
+                    self.Z0_c = col  # 用于第5步
+                    step = 5  # 进入第5步
 
         return step
 
     def __step5(self) -> int:
         """
-        Construct a series of alternating primed and starred zeros as
-        follows. Let Z0 represent the uncovered primed zero found in Step 4.
-        Let Z1 denote the starred zero in the column of Z0 (if any).
-        Let Z2 denote the primed zero in the row of Z1 (there will always
-        be one). Continue until the series terminates at a primed zero
-        that has no starred zero in its column. Unstar each starred zero
-        of the series, star each primed zero of the series, erase all
-        primes and uncover every line in the matrix. Return to Step 3
+        第五步:构造交错路径并调整标记
+        从第4步找到的未覆盖撇号零(Z0)开始,构造交错路径:
+        Z0(撇号) -> Z1(星号) -> Z2(撇号) -> Z3(星号)...
+        直到找到一个其列中没有星号的撇号零为止
+        然后将路径上的星号取消,将撇号变为星号
         """
-        count = 0
-        path = self.path
+
+        count = 0  # 路径长度计数
+        path = self.path  # 存储交错路径
+        # 存入起点Z0(来自第4步找到的未覆盖撇号零)
         path[count][0] = self.Z0_r
         path[count][1] = self.Z0_c
+
         done = False
         while not done:
+            # 在当前零元素的列中找星号
             row = self.__find_star_in_col(path[count][1])
-            if row >= 0:
+            if row >= 0:  # 找到星号
                 count += 1
-                path[count][0] = row
-                path[count][1] = path[count-1][1]
-            else:
+                path[count][0] = row  # 记录星号位置
+                path[count][1] = path[count - 1][1]  # 保持同列
+            else:  # 未找到星号,路径结束
                 done = True
 
-            if not done:
+            if not done:  # 找到星号,继续找撇号
                 col = self.__find_prime_in_row(path[count][0])
                 count += 1
-                path[count][0] = path[count-1][0]
-                path[count][1] = col
+                path[count][0] = path[count - 1][0]  # 保持同行
+                path[count][1] = col  # 记录撇号位置
 
-        self.__convert_path(path, count)
-        self.__clear_covers()
-        self.__erase_primes()
-        return 3
+        # 根据路径调整标记
+        self.__convert_path(path, count)  # 转换路径上的标记
+        self.__clear_covers()  # 清除覆盖
+        self.__erase_primes()  # 清除所有撇号
+        return 3  # 返回第3步
 
     def __step6(self) -> int:
         """
-        Add the value found in Step 4 to every element of each covered
-        row, and subtract it from every element of each uncovered column.
-        Return to Step 4 without altering any stars, primes, or covered
-        lines.
+        第六步:调整矩阵值
+        被覆盖行的元素加上最小值
+        未覆盖列的元素减去最小值
+        保持星号和撇号不变
         """
+
+        # 找出未覆盖元素中的最小值
         minval = self.__find_smallest()
-        events = 0 # track actual changes to matrix
+        events = 0  # 记录实际的矩阵变化次数
+
         for i in range(self.n):
             for j in range(self.n):
                 if self.C[i][j] is DISALLOWED:
-                    continue
+                    continue  # 跳过禁止项
+
+                # 被覆盖行加最小值
                 if self.row_covered[i]:
                     self.C[i][j] += minval
                     events += 1
+
+                # 未覆盖列减最小值
                 if not self.col_covered[j]:
                     self.C[i][j] -= minval
                     events += 1
+
+                # 如果一个元素既在覆盖行又在未覆盖列
+                # 加减抵消,实际没有变化
                 if self.row_covered[i] and not self.col_covered[j]:
-                    events -= 2 # change reversed, no real difference
+                    events -= 2
+
+        # 如果矩阵没有任何实际变化,说明无解
         if (events == 0):
             raise UnsolvableMatrix("Matrix cannot be solved!")
-        return 4
+
+        return 4  # 返回第4步
 
     def __find_smallest(self) -> AnyNum:
         """Find the smallest uncovered value in the matrix."""
