@@ -25,6 +25,8 @@ from typing import Union, NewType, Sequence, Tuple, Optional, Callable
 
 __all__     = ['Munkres', 'make_cost_matrix', 'DISALLOWED']
 
+import numpy as np
+
 # ---------------------------------------------------------------------------
 # Globals
 # ---------------------------------------------------------------------------
@@ -110,6 +112,46 @@ class Munkres:
             new_matrix += [[pad_value] * total_rows]
 
         return new_matrix
+
+
+    def calculate_utility(x_i:float, x:np.ndarray, p:np.ndarray, sigma_i: float, epsilon: float) -> float:
+        """
+        计算效用函数 u_c(x_i) = (x_i / sum(x_n)) * (sum(p_n) - epsilon * sigma_i * x_i)
+
+        参数:
+        x_i: float - 当前的 x 值
+        x: np.ndarray - 所有 x 值的数组
+        : np.ndarray - p_n 值的数组
+        sigma_i: float - σi 值
+        epsilon: float - ε 值
+
+        返回:
+        float: 计算得到的效用值
+        """
+        # 计算分母部分（所有x的和）
+        x_sum = np.sum(x)
+
+        # 计算第一个系数（x_i / sum(x_n)）
+        coefficient = x_i / x_sum
+
+
+        # 计算所有p的和
+        p_sum = np.sum(p)
+
+        # 计算第一部分
+        part_1 = coefficient * p_sum
+
+        # 计算第二部分
+        part_2 = epsilon * sigma_i * x_i
+
+        # 计算效用函数 u_c(x_i)
+        utility = part_1 - part_2
+
+        return utility
+
+
+
+
 
     def compute(self, cost_matrix: Matrix) -> Sequence[Tuple[int, int]]:
         """
