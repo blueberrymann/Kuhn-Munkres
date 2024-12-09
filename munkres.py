@@ -57,6 +57,144 @@ class UnsolvableMatrix(Exception):
     """
     pass
 
+
+# ---------------------------------------------------------------------------
+# Classes
+# ---------------------------------------------------------------------------
+
+
+class ModifiedMunkres:
+    def __init__(self):
+        self.C = None
+        self.row_covered = []
+        self.col_covered = []
+        self.n = 0
+        self.Z0_r = 0
+        self.Z0_c = 0
+        self.marked = None
+        self.path = None
+
+    def calculate_utility(self, x_i: float, x: np.ndarray, p: np.ndarray,
+                          sigma_i: float, epsilon: float) -> float:
+        """计算效用函数值"""
+        x_sum = np.sum(x)
+        coefficient = x_i / x_sum
+        p_sum = np.sum(p)
+        part_1 = coefficient * p_sum
+        part_2 = epsilon * sigma_i * x_i
+        return part_1 - part_2
+
+    def create_utility_matrix(self, org_data: np.ndarray, cpc_data: np.ndarray,
+                              org_amounts: np.ndarray, sigma: np.ndarray,
+                              epsilon: float) -> Matrix:
+        """创建效用矩阵"""
+        n = len(org_data)
+        m = len(cpc_data)
+        utility_matrix = []
+
+        for i in range(n):
+            row = []
+            for j in range(m):
+                # 计算当前匹配的效用值
+                utility = self.calculate_utility(
+                    org_amounts[i],  # x_i: 当前org的数据量
+                    org_amounts,  # x: 所有org的数据量数组
+                    cpc_data,  # p: cpc能力值数组
+                    sigma[i],  # sigma_i: 当前org的sigma值
+                    epsilon  # epsilon: 给定参数
+                )
+                row.append(utility)
+            utility_matrix.append(row)
+
+        return utility_matrix
+
+    def compute(self, org_data: np.ndarray, cpc_data: np.ndarray,
+                org_amounts: np.ndarray, sigma: np.ndarray,
+                epsilon: float) -> Sequence[Tuple[int, int]]:
+        """计算最优匹配方案
+
+        参数:
+        org_data: org ID数组
+        cpc_data: cpc的计算能力数组
+        org_amounts: org提供的数据量数组
+        sigma: 训练成本系数数组
+        epsilon: 效用函数参数
+        """
+        # 创建效用矩阵
+        utility_matrix = self.create_utility_matrix(
+            org_data, cpc_data, org_amounts, sigma, epsilon)
+
+        # 将效用矩阵转换为成本矩阵（取负值，因为我们要最大化效用）
+        cost_matrix = [[-val if val is not DISALLOWED else DISALLOWED
+                        for val in row] for row in utility_matrix]
+
+        # 使用原始Munkres算法求解
+        self.C = self.pad_matrix(cost_matrix)
+        self.n = len(self.C)
+        self.row_covered = [False for i in range(self.n)]
+        self.col_covered = [False for i in range(self.n)]
+        self.Z0_r = 0
+        self.Z0_c = 0
+        self.path = self.__make_matrix(self.n * 2, 0)
+        self.marked = self.__make_matrix(self.n, 0)
+
+        done = False
+        step = 1
+        steps = {1: self.__step1,
+                 2: self.__step2,
+                 3: self.__step3,
+                 4: self.__step4,
+                 5: self.__step5,
+                 6: self.__step6}
+
+        while not done:
+            try:
+                func = steps[step]
+                step = func()
+            except KeyError:
+                done = True
+
+        # 提取最优匹配结果
+        results = []
+        for i in range(len(org_data)):
+            for j in range(len(cpc_data)):
+                if self.marked[i][j] == 1:
+                    results.append((org_data[i], cpc_data[j]))
+
+        return results
+
+    # [原有的辅助方法保持不变...]
+    def pad_matrix(self, matrix: Matrix, pad_value: int = 0) -> Matrix:
+        """填充矩阵使其成为方阵"""
+        max_columns = 0
+        total_rows = len(matrix)
+
+        for row in matrix:
+            max_columns = max(max_columns, len(row))
+
+        total_rows = max(max_columns, total_rows)
+
+        new_matrix = []
+        for row in matrix:
+            row_len = len(row)
+            new_row = row[:]
+            if total_rows > row_len:
+                new_row += [pad_value] * (total_rows - row_len)
+            new_matrix += [new_row]
+
+        while len(new_matrix) < total_rows:
+            new_matrix += [[pad_value] * total_rows]
+
+        return new_matrix
+
+    def __make_matrix(self, n: int, val: AnyNum) -> Matrix:
+        """创建n*n大小的矩阵"""
+        matrix = []
+        for i in range(n):
+            matrix += [[val for j in range(n)]]
+        return matrix
+
+
 # ---------------------------------------------------------------------------
 # Classes
 # ---------------------------------------------------------------------------
