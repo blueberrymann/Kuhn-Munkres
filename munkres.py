@@ -73,6 +73,7 @@ class ModifiedMunkres:
         self.Z0_c = 0
         self.marked = None
         self.path = None
+        self.utility_matrix = None  # 存储效用矩阵供后续输出使用
 
     def calculate_utility(self, x_i: float, x: np.ndarray, p: np.ndarray,
                           sigma_i: float, epsilon: float) -> float:
@@ -106,20 +107,37 @@ class ModifiedMunkres:
                 row.append(utility)
             utility_matrix.append(row)
 
+        self.utility_matrix = utility_matrix  # 保存效用矩阵
         return utility_matrix
+
+    def print_assignment_details(self, matches: Sequence[Tuple[int, int]],
+                                 org_data: np.ndarray, cpc_data: np.ndarray,
+                                 org_amounts: np.ndarray) -> None:
+        """打印匹配结果的详细信息"""
+        print("\n=== 匹配结果详情 ===")
+        print("\n格式: (OrgID, CpcID) -> [数据量, 计算能力, 效用值]")
+        print("-" * 50)
+
+        total_utility = 0
+        for org_id, cpc_id in matches:
+            # 找到矩阵中对应的索引
+            org_idx = np.where(org_data == org_id)[0][0]
+            cpc_idx = np.where(cpc_data == cpc_id)[0][0]
+
+            # 获取相应的效用值
+            utility = self.utility_matrix[org_idx][cpc_idx]
+            total_utility += utility
+
+            print(f"({org_id}, {cpc_id}) -> [数据量: {org_amounts[org_idx]}, "
+                  f"计算能力: {cpc_data[cpc_idx]:.3f}, 效用值: {utility:.3f}]")
+
+        print("-" * 50)
+        print(f"总效用值: {total_utility:.3f}")
 
     def compute(self, org_data: np.ndarray, cpc_data: np.ndarray,
                 org_amounts: np.ndarray, sigma: np.ndarray,
                 epsilon: float) -> Sequence[Tuple[int, int]]:
-        """计算最优匹配方案
-
-        参数:
-        org_data: org ID数组
-        cpc_data: cpc的计算能力数组
-        org_amounts: org提供的数据量数组
-        sigma: 训练成本系数数组
-        epsilon: 效用函数参数
-        """
+        """计算最优匹配方案"""
         # 创建效用矩阵
         utility_matrix = self.create_utility_matrix(
             org_data, cpc_data, org_amounts, sigma, epsilon)
@@ -161,6 +179,9 @@ class ModifiedMunkres:
                 if self.marked[i][j] == 1:
                     results.append((org_data[i], cpc_data[j]))
 
+        # 打印匹配结果详情
+        self.print_assignment_details(results, org_data, cpc_data, org_amounts)
+
         return results
 
     # [原有的辅助方法保持不变...]
@@ -193,6 +214,312 @@ class ModifiedMunkres:
         for i in range(n):
             matrix += [[val for j in range(n)]]
         return matrix
+
+    def __copy_matrix(self, matrix: Matrix) -> Matrix:
+        """
+        深拷贝矩阵
+        深拷贝(deep copy)是指创建一个新的矩阵,不仅复制矩阵本身,还复制其中的所有嵌套数据。
+        与之相对的是浅拷贝(shallow copy),只复制最外层结构。
+        例如对于矩阵 [[1,2], [3,4]]:
+        浅拷贝: 新矩阵引用原始内部列表
+        深拷贝: 创建完全独立的新矩阵
+        深拷贝确保修改新矩阵不会影响原矩阵。
+        """
+        return copy.deepcopy(matrix)
+
+    def __make_matrix(self, n: int, val: AnyNum) -> Matrix:
+        """创建n*n大小的矩阵,填充指定初值val"""
+        matrix = []
+        for i in range(n):
+            matrix += [[val for j in range(n)]]
+        return matrix
+
+    def __step1(self) -> int:
+        """
+        第一步:行归约 - 从每行中减去该行的最小值,使每行都有零元素
+
+        DISALLOWED表示不可达的权重值，例如：有的工人拒绝前往地点进行服务、某工人不具备完成特定任务的技能
+
+        """
+        C = self.C  # 获取成本矩阵的引用
+        n = self.n  # 获取矩阵大小
+
+        # 对每一行进行处理
+        for i in range(n):
+            # 获取该行中所有非禁止值
+            vals = [x for x in self.C[i] if x is not DISALLOWED]
+
+            # 如果该行全是禁止值,则无法求解
+            if len(vals) == 0:
+                raise UnsolvableMatrix("第{0}行全部禁止".format(i))
+
+            # 找出该行最小值
+            minval = min(vals)
+
+            # 该行每个非禁止元素都减去最小值
+            # 这样确保每行至少有一个0,为后续找最优匹配做准备
+            for j in range(n):
+                if self.C[i][j] is not DISALLOWED:
+                    self.C[i][j] -= minval
+
+        return 2  # 进入第2步
+
+    def __step2(self) -> int:
+        """
+        第二步:找零元素并标星
+        遍历矩阵,对于未被覆盖的0元素,如果其所在行列都没有星号,则标记星号
+        """
+        n = self.n
+
+        # 遍历矩阵找零元素
+        for i in range(n):
+            for j in range(n):
+                # 找到未覆盖的零元素,且其行列都未标记星号
+                if (self.C[i][j] == 0) and \
+                        (not self.col_covered[j]) and \
+                        (not self.row_covered[i]):
+                    self.marked[i][j] = 1  # 标记星号
+                    self.col_covered[j] = True  # 覆盖此列
+                    self.row_covered[i] = True  # 覆盖此行
+                    break  # 找到一个就处理下一行
+
+        self.__clear_covers()  # 清除所有覆盖标记
+        return 3  # 进入第3步
+
+    def __step3(self) -> int:
+        """
+        第三步:覆盖星号列并判断是否完成
+        覆盖所有包含星号的列,如果覆盖的列数等于矩阵维度,说明找到完整匹配
+        """
+        n = self.n
+        count = 0  # 记录覆盖的列数
+
+        # 遍历矩阵
+        for i in range(n):
+            for j in range(n):
+                # 找到未覆盖列中的星号元素
+                if self.marked[i][j] == 1 and not self.col_covered[j]:
+                    self.col_covered[j] = True  # 覆盖该列
+                    count += 1  # 覆盖列数+1
+
+        # 判断是否完成匹配
+        if count >= n:  # 覆盖列数等于矩阵维度,匹配完成
+            step = 7
+        else:  # 未完成匹配,继续第4步
+            step = 4
+
+        return step
+
+    def __step4(self) -> int:
+        """第四步:找未覆盖的零并标记撇号
+        找到未覆盖的零,标记撇号
+        如果该行没有星号 -> 进入第5步
+        否则:覆盖此行,取消覆盖星号所在列,继续找零
+        如果没有未覆盖的零 -> 进入第6步"""
+
+        step = 0
+        done = False
+        row = col = 0
+        star_col = -1
+
+        while not done:
+            # 找未覆盖的零
+            (row, col) = self.__find_a_zero(row, col)
+
+            if row < 0:  # 没找到未覆盖的零
+                done = True
+                step = 6  # 进入第6步
+            else:  # 找到未覆盖的零
+                self.marked[row][col] = 2  # 标记撇号
+                star_col = self.__find_star_in_row(row)  # 在此行找星号
+
+                if star_col >= 0:  # 找到星号
+                    col = star_col
+                    self.row_covered[row] = True  # 覆盖此行
+                    self.col_covered[col] = False  # 取消覆盖星号列
+                else:  # 没找到星号
+                    done = True
+                    self.Z0_r = row  # 记录当前零元素位置
+                    self.Z0_c = col  # 用于第5步
+                    step = 5  # 进入第5步
+
+        return step
+
+    def __step5(self) -> int:
+        """
+        第五步:构造交错路径并调整标记
+        从第4步找到的未覆盖撇号零(Z0)开始,构造交错路径:
+        Z0(撇号) -> Z1(星号) -> Z2(撇号) -> Z3(星号)...
+        直到找到一个其列中没有星号的撇号零为止
+        然后将路径上的星号取消,将撇号变为星号
+        """
+
+        count = 0  # 路径长度计数
+        path = self.path  # 存储交错路径
+        # 存入起点Z0(来自第4步找到的未覆盖撇号零)
+        path[count][0] = self.Z0_r
+        path[count][1] = self.Z0_c
+
+        done = False
+        while not done:
+            # 在当前零元素的列中找星号
+            row = self.__find_star_in_col(path[count][1])
+            if row >= 0:  # 找到星号
+                count += 1
+                path[count][0] = row  # 记录星号位置
+                path[count][1] = path[count - 1][1]  # 保持同列
+            else:  # 未找到星号,路径结束
+                done = True
+
+            if not done:  # 找到星号,继续找撇号
+                col = self.__find_prime_in_row(path[count][0])
+                count += 1
+                path[count][0] = path[count - 1][0]  # 保持同行
+                path[count][1] = col  # 记录撇号位置
+
+        # 根据路径调整标记
+        self.__convert_path(path, count)  # 转换路径上的标记
+        self.__clear_covers()  # 清除覆盖
+        self.__erase_primes()  # 清除所有撇号
+        return 3  # 返回第3步
+
+    def __step6(self) -> int:
+        """
+        第六步:调整矩阵值
+        被覆盖行的元素加上最小值
+        未覆盖列的元素减去最小值
+        保持星号和撇号不变
+        """
+
+        # 找出未覆盖元素中的最小值
+        minval = self.__find_smallest()
+        events = 0  # 记录实际的矩阵变化次数
+
+        for i in range(self.n):
+            for j in range(self.n):
+                if self.C[i][j] is DISALLOWED:
+                    continue  # 跳过禁止项
+
+                # 被覆盖行加最小值
+                if self.row_covered[i]:
+                    self.C[i][j] += minval
+                    events += 1
+
+                # 未覆盖列减最小值
+                if not self.col_covered[j]:
+                    self.C[i][j] -= minval
+                    events += 1
+
+                # 如果一个元素既在覆盖行又在未覆盖列
+                # 加减抵消,实际没有变化
+                if self.row_covered[i] and not self.col_covered[j]:
+                    events -= 2
+
+        # 如果矩阵没有任何实际变化,说明无解
+        if (events == 0):
+            raise UnsolvableMatrix("Matrix cannot be solved!")
+
+        return 4  # 返回第4步
+
+    def __find_smallest(self) -> AnyNum:
+        """Find the smallest uncovered value in the matrix."""
+        minval = sys.maxsize
+        for i in range(self.n):
+            for j in range(self.n):
+                if (not self.row_covered[i]) and (not self.col_covered[j]):
+                    if self.C[i][j] is not DISALLOWED and minval > self.C[i][j]:
+                        minval = self.C[i][j]
+        return minval
+
+
+    def __find_a_zero(self, i0: int = 0, j0: int = 0) -> Tuple[int, int]:
+        """Find the first uncovered element with value 0"""
+        row = -1
+        col = -1
+        i = i0
+        n = self.n
+        done = False
+
+        while not done:
+            j = j0
+            while True:
+                if (self.C[i][j] == 0) and \
+                        (not self.row_covered[i]) and \
+                        (not self.col_covered[j]):
+                    row = i
+                    col = j
+                    done = True
+                j = (j + 1) % n
+                if j == j0:
+                    break
+            i = (i + 1) % n
+            if i == i0:
+                done = True
+
+        return (row, col)
+
+    def __find_star_in_row(self, row: Sequence[AnyNum]) -> int:
+        """
+        Find the first starred element in the specified row. Returns
+        the column index, or -1 if no starred element was found.
+        """
+        col = -1
+        for j in range(self.n):
+            if self.marked[row][j] == 1:
+                col = j
+                break
+
+        return col
+
+    def __find_star_in_col(self, col: Sequence[AnyNum]) -> int:
+        """
+        Find the first starred element in the specified row. Returns
+        the row index, or -1 if no starred element was found.
+        """
+        row = -1
+        for i in range(self.n):
+            if self.marked[i][col] == 1:
+                row = i
+                break
+
+        return row
+
+    def __find_prime_in_row(self, row) -> int:
+        """
+        Find the first prime element in the specified row. Returns
+        the column index, or -1 if no starred element was found.
+        """
+        col = -1
+        for j in range(self.n):
+            if self.marked[row][j] == 2:
+                col = j
+                break
+
+        return col
+
+    def __convert_path(self,
+                       path: Sequence[Sequence[int]],
+                       count: int) -> None:
+        for i in range(count+1):
+            if self.marked[path[i][0]][path[i][1]] == 1:
+                self.marked[path[i][0]][path[i][1]] = 0
+            else:
+                self.marked[path[i][0]][path[i][1]] = 1
+
+    def __clear_covers(self) -> None:
+        """Clear all covered matrix cells"""
+        for i in range(self.n):
+            self.row_covered[i] = False
+            self.col_covered[i] = False
+
+    def __erase_primes(self) -> None:
+        """Erase all prime markings"""
+        for i in range(self.n):
+            for j in range(self.n):
+                if self.marked[i][j] == 2:
+                    self.marked[i][j] = 0
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -801,3 +1128,38 @@ if __name__ == '__main__':
             print(('(%d, %d) -> %s' % (r, c, x)))
         print(('lowest cost=%s' % total_cost))
         assert expected_total == total_cost
+
+    # 创建算法实例
+    m = ModifiedMunkres()
+
+    # 准备输入数据
+    org_data = np.array([1, 2, 3])  # org IDs
+    cpc_data = np.array([0.5, 0.7, 0.9])  # cpc计算能力
+    org_amounts = np.array([100, 200, 300])  # 数据量
+    sigma = np.array([0.1, 0.2, 0.3])  # 训练成本系数
+    epsilon = 0.01  # 效用函数参数
+
+    print(org_data)
+
+    # 计算最优匹配
+    matches = m.compute(org_data, cpc_data, org_amounts, sigma, epsilon)
+
+    # 创建算法实例
+    m = ModifiedMunkres()
+
+    # 准备测试数据
+    org_data = np.array([1, 2, 3])  # org IDs
+    cpc_data = np.array([0.5, 0.7, 0.9])  # cpc计算能力
+    org_amounts = np.array([100, 200, 300])  # 数据量
+    sigma = np.array([0.1, 0.2, 0.3])  # 训练成本系数
+    epsilon = 0.01  # 效用函数参数
+
+    print("\n=== 输入数据 ===")
+    print(f"Org IDs: {org_data}")
+    print(f"CPC能力值: {cpc_data}")
+    print(f"数据量: {org_amounts}")
+    print(f"训练成本系数: {sigma}")
+    print(f"效用函数参数ε: {epsilon}")
+
+    # 计算最优匹配
+    matches = m.compute(org_data, cpc_data, org_amounts, sigma, epsilon)
